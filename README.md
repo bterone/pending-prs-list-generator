@@ -23,10 +23,10 @@ yarn install
 
 ```bash
 # Using owner/repo format
-node pr-generator.js facebook/react
+node pr-generator.js bterone/pending-prs-list-generator
 
 # Using GitHub URL
-node pr-generator.js https://github.com/microsoft/vscode
+node pr-generator.js https://github.com/bterone/pending-prs-list-generator
 
 # Specify custom output file
 node pr-generator.js owner/repo my-custom-prs.md
@@ -51,19 +51,23 @@ The generated markdown will look like:
 Generated on: 2025-01-15
 Total PRs: 45
 
-## 🚨 High Priority (3)
+## Need one more approval :white_check_mark:
 
-- [Fix critical memory leak in hooks](https://github.com/facebook/react/pull/123) - #123
-  - Author: developer1
-  - Created: Mon Jan 15 2025
-  - Labels: high priority, bug
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
 
-## 📋 All Pull Requests (42)
+## Needs approvals from previous :sparkles: prolific :sparkles: commenters
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
 
-- [Add new component feature](https://github.com/facebook/react/pull/124) - #124
-  - Author: developer2
-  - Created: Sun Jan 14 2025
-  - Labels: enhancement, feature
+## Requires review :writing_hand:
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
+
+## Have some comments to fix :wrench:
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
+- [Fix critical memory leak in hooks](PR_URL) - #ISSUENUMBER
 ```
 
 ## Supported Priority Labels
@@ -81,8 +85,5 @@ The script automatically detects these labels as high priority:
 
 ## Common commands
 ```
-node --env-file=.env pr-generator.js https://github.com/easyhoteluk/easyhotel.react
-node --env-file=.env pr-generator.js https://github.com/easyhoteluk/easyhotel.api
-node --env-file=.env pr-generator.js https://github.com/easyhoteluk/easyhotel.cms
-node --env-file=.env pr-generator.js https://github.com/easyhoteluk/aws-infrastructure
+node --env-file=.env pr-generator.js https://github.com/bterone/pending-prs-list-generator
 ```
