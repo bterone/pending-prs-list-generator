@@ -2,7 +2,6 @@
 
 const axios = require('axios');
 const fs = require('fs');
-const path = require('path');
 
 class PRMarkdownGenerator {
   constructor() {
@@ -35,7 +34,7 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Fetch all pull requests from the repository
+   * Fetch all pull requests from the repository with detailed review information
    */
   async fetchPullRequests(owner, repo) {
     try {
@@ -74,6 +73,38 @@ class PRMarkdownGenerator {
         page++;
       }
 
+      // Fetch detailed review and comment information for each PR
+      for (let pr of allPRs) {
+        try {
+          // Fetch reviews
+          const reviewsResponse = await axios.get(
+            `${this.baseURL}/repos/${owner}/${repo}/pulls/${pr.number}/reviews`,
+            { headers }
+          );
+          pr.reviews = reviewsResponse.data;
+
+          // Fetch review comments
+          const reviewCommentsResponse = await axios.get(
+            `${this.baseURL}/repos/${owner}/${repo}/pulls/${pr.number}/comments`,
+            { headers }
+          );
+          pr.reviewComments = reviewCommentsResponse.data;
+
+          // Fetch issue comments
+          const issueCommentsResponse = await axios.get(
+            `${this.baseURL}/repos/${owner}/${repo}/issues/${pr.number}/comments`,
+            { headers }
+          );
+          pr.issueComments = issueCommentsResponse.data;
+
+        } catch (error) {
+          console.warn(`Failed to fetch detailed info for PR #${pr.number}: ${error.message}`);
+          pr.reviews = [];
+          pr.reviewComments = [];
+          pr.issueComments = [];
+        }
+      }
+
       return allPRs;
     } catch (error) {
       if (error.response?.status === 404) {
@@ -84,6 +115,129 @@ class PRMarkdownGenerator {
         throw new Error(`Failed to fetch PRs: ${error.message}`);
       }
     }
+  }
+
+  /**
+   * Get approved reviews (excluding dismissed ones)
+   */
+  getApprovals(pr) {
+    if (!pr.reviews) return [];
+    
+    const latestReviewsByUser = new Map();
+    
+    // Get the latest review from each user
+    pr.reviews
+      .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at))
+      .forEach(review => {
+        latestReviewsByUser.set(review.user.login, review);
+      });
+    
+    // Return only approved reviews
+    return Array.from(latestReviewsByUser.values())
+      .filter(review => review.state === 'APPROVED');
+  }
+
+  /**
+   * Get all comments from real users (excluding bots)
+   */
+  getAllComments(pr) {
+    const allComments = [
+      ...(pr.reviewComments || []),
+      ...(pr.issueComments || [])
+    ];
+    
+    // Filter out bot comments (specifically gitstream-cm and other common bots)
+    return allComments.filter(comment => 
+      !comment.user.login.includes('bot') && 
+      comment.user.login !== 'gitstream-cm' &&
+      comment.user.type !== 'Bot'
+    );
+  }
+
+  /**
+   * Get commenters who have made 3+ comments and haven't approved
+   */
+  getProlificCommentersWithoutApproval(pr) {
+    const comments = this.getAllComments(pr);
+    const approvals = this.getApprovals(pr);
+    const approvedUsers = new Set(approvals.map(approval => approval.user.login));
+    
+    // Count comments by user
+    const commentCounts = new Map();
+    comments.forEach(comment => {
+      const user = comment.user.login;
+      commentCounts.set(user, (commentCounts.get(user) || 0) + 1);
+    });
+    
+    // Find users with 3+ comments who haven't approved
+    const prolificCommenters = [];
+    for (const [user, count] of commentCounts.entries()) {
+      if (count >= 3 && !approvedUsers.has(user)) {
+        prolificCommenters.push(user);
+      }
+    }
+    
+    return prolificCommenters;
+  }
+
+  /**
+   * Check if PR has unresolved comments (assuming all comments are unresolved for now)
+   */
+  hasUnresolvedComments(pr) {
+    const comments = this.getAllComments(pr);
+    return comments.length > 0;
+  }
+
+  /**
+   * Check if bterone has approved the PR
+   */
+  hasBteroneApproval(pr) {
+    const approvals = this.getApprovals(pr);
+    return approvals.some(approval => approval.user.login === 'bterone');
+  }
+
+  /**
+   * Categorize PRs based on the new criteria
+   */
+  categorizePRs(prs) {
+    const categories = {
+      needOneMoreApproval: [],
+      needsProlificCommentersApproval: [],
+      requiresReview: [],
+      hasCommentsToFix: [],
+      needsMerging: []
+    };
+
+    prs.forEach(pr => {
+      const approvals = this.getApprovals(pr);
+      const approvalCount = approvals.length;
+      const prolificCommenters = this.getProlificCommentersWithoutApproval(pr);
+      const hasUnresolvedComments = this.hasUnresolvedComments(pr);
+      const hasBteroneApproval = this.hasBteroneApproval(pr);
+
+      // Needs merging (2+ approvals, no unresolved comments, but no bterone approval)
+      if (approvalCount >= 2 && !hasUnresolvedComments && !hasBteroneApproval) {
+        categories.needsMerging.push(pr);
+      }
+      // Need one more approval (exactly 1 approval)
+      else if (approvalCount === 1) {
+        categories.needOneMoreApproval.push(pr);
+      }
+      // Needs approvals from prolific commenters
+      else if (prolificCommenters.length > 0) {
+        categories.needsProlificCommentersApproval.push(pr);
+      }
+      // Has comments to fix
+      else if (hasUnresolvedComments) {
+        categories.hasCommentsToFix.push(pr);
+      }
+      // Requires review (no approvals or reviews)
+      else if (approvalCount === 0) {
+        categories.requiresReview.push(pr);
+      }
+    });
+
+    return categories;
   }
 
   /**
@@ -115,31 +269,62 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Generate markdown content from PRs
+   * Generate markdown content from categorized PRs
    */
   generateMarkdown(prs, owner, repo) {
-    const sortedPRs = this.sortPRsByPriority(prs);
+    const categories = this.categorizePRs(prs);
     
     let markdown = `# Pull Requests for ${owner}/${repo}\n\n`;
     markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
     markdown += `Total PRs: ${prs.length}\n\n`;
 
-    // Separate high priority and regular PRs for clear sections
-    const highPriorityPRs = sortedPRs.filter(pr => this.hasHighPriorityLabel(pr));
-    const regularPRs = sortedPRs.filter(pr => !this.hasHighPriorityLabel(pr));
-
-    if (highPriorityPRs.length > 0) {
-      markdown += `## 🚨 High Priority (${highPriorityPRs.length})\n\n`;
-      highPriorityPRs.forEach(pr => {
-        markdown += `- [${pr.title}](${pr.html_url})\n`;
+    // Add each category section
+    if (categories.needOneMoreApproval.length > 0) {
+      markdown += `## Need one more approval :white_check_mark:\n\n`;
+      categories.needOneMoreApproval.forEach(pr => {
+        const approvals = this.getApprovals(pr);
+        const approverName = approvals.length > 0 ? approvals[0].user.login : 'unknown';
+        markdown += `- [${pr.title}](${pr.html_url}) (approved by ${approverName})\n`;
       });
+      markdown += `\n`;
     }
 
-    if (regularPRs.length > 0) {
-      markdown += `## 📋 All Pull Requests (${regularPRs.length})\n\n`;
-      regularPRs.forEach(pr => {
+    if (categories.needsProlificCommentersApproval.length > 0) {
+      markdown += `## Needs approvals from previous :sparkles: prolific :sparkles: commenters\n\n`;
+      categories.needsProlificCommentersApproval.forEach(pr => {
+        const prolificCommenters = this.getProlificCommentersWithoutApproval(pr);
+        const commentersList = prolificCommenters.join(', ');
+        markdown += `- [${pr.title}](${pr.html_url}) (waiting for: ${commentersList})\n`;
+      });
+      markdown += `\n`;
+    }
+
+    if (categories.requiresReview.length > 0) {
+      markdown += `## Requires review :writing_hand:\n\n`;
+      categories.requiresReview.forEach(pr => {
         markdown += `- [${pr.title}](${pr.html_url})\n`;
       });
+      markdown += `\n`;
+    }
+
+    if (categories.hasCommentsToFix.length > 0) {
+      markdown += `## Have some comments to fix :wrench:\n\n`;
+      categories.hasCommentsToFix.forEach(pr => {
+        const comments = this.getAllComments(pr);
+        const commentCount = comments.length;
+        markdown += `- [${pr.title}](${pr.html_url}) (${commentCount} comment${commentCount !== 1 ? 's' : ''})\n`;
+      });
+      markdown += `\n`;
+    }
+
+    if (categories.needsMerging.length > 0) {
+      markdown += `## Needs merging (Reminder for me :zany_face:)\n\n`;
+      categories.needsMerging.forEach(pr => {
+        const approvals = this.getApprovals(pr);
+        const approvalCount = approvals.length;
+        markdown += `- [${pr.title}](${pr.html_url}) (${approvalCount} approvals)\n`;
+      });
+      markdown += `\n`;
     }
 
     if (prs.length === 0) {
