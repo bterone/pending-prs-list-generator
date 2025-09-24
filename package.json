@@ -1,0 +1,15 @@
+{
+  "name": "pr-markdown-generator",
+  "version": "1.0.0",
+  "description": "Generate markdown from GitHub PRs with priority sorting",
+  "main": "pr-generator.js",
+  "scripts": {
+    "start": "node pr-generator.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "keywords": ["github", "pull-requests", "markdown"],
+  "author": "",
+  "license": "MIT"
+}
