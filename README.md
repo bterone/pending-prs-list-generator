@@ -81,8 +81,3 @@ The script automatically detects these labels as high priority:
 - Node.js 12 or higher
 - Internet connection
 - Optional: GitHub personal access token for higher rate limits
-
-## Common commands
-```
-node --env-file=.env pr-generator.js https://github.com/bterone/pending-prs-list-generator
-```
