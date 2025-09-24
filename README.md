@@ -7,7 +7,6 @@ A Node.js script that fetches pull requests from a GitHub repository and generat
 - 🔍 Fetches all open pull requests from any GitHub repository
 - 🚨 Automatically prioritizes PRs with "high priority", "urgent", or "critical" labels
 - 📝 Generates clean markdown with clickable PR titles
-- 👤 Includes author information, creation dates, and labels
 - 🔄 Handles pagination for repositories with many PRs
 - 🔐 Supports GitHub token authentication for higher rate limits
 
@@ -46,7 +45,7 @@ node pr-generator.js your-org/your-repo
 The generated markdown will look like:
 
 ```markdown
-# Pull Requests for facebook/react
+# Pull Requests for bterone/pending-prs-list-generator
 
 Generated on: 2025-01-15
 Total PRs: 45
