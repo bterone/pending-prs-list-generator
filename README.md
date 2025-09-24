@@ -29,6 +29,9 @@ node pr-generator.js https://github.com/bterone/pending-prs-list-generator
 
 # Specify custom output file
 node pr-generator.js owner/repo my-custom-prs.md
+
+# If .env file is provided
+node --env-file=.env pr-generator.js https://github.com/bterone/pending-prs-list-generator
 ```
 
 ### With GitHub Token (Recommended)
