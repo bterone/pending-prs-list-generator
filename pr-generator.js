@@ -252,7 +252,7 @@ class PRMarkdownGenerator {
     return pr.labels.some(label => 
       label.name.toLowerCase().includes('high priority') ||
       label.name.toLowerCase().includes('high-priority') ||
-      label.name.toLowerCase().includes('priority: high') ||
+      label.name.toLowerCase().includes('priority : high') ||
       label.name.toLowerCase().includes('urgent') ||
       label.name.toLowerCase().includes('critical')
     );
