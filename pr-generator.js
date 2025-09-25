@@ -161,6 +161,7 @@ class PRMarkdownGenerator {
     const comments = this.getAllComments(pr);
     const approvals = this.getApprovals(pr);
     const approvedUsers = new Set(approvals.map(approval => approval.user.login));
+    const prOwner = pr.user.login;
     
     // Count comments by user
     const commentCounts = new Map();
@@ -169,10 +170,10 @@ class PRMarkdownGenerator {
       commentCounts.set(user, (commentCounts.get(user) || 0) + 1);
     });
     
-    // Find users with 3+ comments who haven't approved
+    // Find users with 3+ comments who haven't approved (excluding PR owner)
     const prolificCommenters = [];
     for (const [user, count] of commentCounts.entries()) {
-      if (count >= 3 && !approvedUsers.has(user)) {
+      if (count >= 3 && !approvedUsers.has(user) && user !== prOwner) {
         prolificCommenters.push(user);
       }
     }
