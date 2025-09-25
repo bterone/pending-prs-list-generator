@@ -15,7 +15,7 @@ class PRMarkdownGenerator {
    */
   parseRepository(repoInput) {
     let owner, repo;
-    
+
     if (repoInput.includes('github.com')) {
       const match = repoInput.match(/github\.com\/([^\/]+)\/([^\/\?#]+)/);
       if (match) {
@@ -29,7 +29,7 @@ class PRMarkdownGenerator {
 
     // Clean up repo name (remove .git suffix if present)
     repo = repo.replace(/\.git$/, '');
-    
+
     return { owner, repo };
   }
 
@@ -68,7 +68,7 @@ class PRMarkdownGenerator {
         // Filter out draft PRs - only include PRs ready for review
         const readyForReviewPRs = prs.filter(pr => !pr.draft);
         allPRs = allPRs.concat(readyForReviewPRs);
-        
+
         hasMore = prs.length === 100;
         page++;
       }
@@ -122,16 +122,16 @@ class PRMarkdownGenerator {
    */
   getApprovals(pr) {
     if (!pr.reviews) return [];
-    
+
     const latestReviewsByUser = new Map();
-    
+
     // Get the latest review from each user
     pr.reviews
       .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at))
       .forEach(review => {
         latestReviewsByUser.set(review.user.login, review);
       });
-    
+
     // Return only approved reviews
     return Array.from(latestReviewsByUser.values())
       .filter(review => review.state === 'APPROVED');
@@ -145,10 +145,10 @@ class PRMarkdownGenerator {
       ...(pr.reviewComments || []),
       ...(pr.issueComments || [])
     ];
-    
+
     // Filter out bot comments (specifically gitstream-cm and other common bots)
-    return allComments.filter(comment => 
-      !comment.user.login.includes('bot') && 
+    return allComments.filter(comment =>
+      !comment.user.login.includes('bot') &&
       comment.user.login !== 'gitstream-cm' &&
       comment.user.type !== 'Bot'
     );
@@ -162,14 +162,14 @@ class PRMarkdownGenerator {
     const approvals = this.getApprovals(pr);
     const approvedUsers = new Set(approvals.map(approval => approval.user.login));
     const prOwner = pr.user.login;
-    
+
     // Count comments by user
     const commentCounts = new Map();
     comments.forEach(comment => {
       const user = comment.user.login;
       commentCounts.set(user, (commentCounts.get(user) || 0) + 1);
     });
-    
+
     // Find users with 3+ comments who haven't approved (excluding PR owner)
     const prolificCommenters = [];
     for (const [user, count] of commentCounts.entries()) {
@@ -177,7 +177,7 @@ class PRMarkdownGenerator {
         prolificCommenters.push(user);
       }
     }
-    
+
     return prolificCommenters;
   }
 
@@ -206,6 +206,7 @@ class PRMarkdownGenerator {
    */
   categorizePRs(prs) {
     const categories = {
+      highPriority: [],
       needOneMoreApproval: [],
       needsProlificCommentersApproval: [],
       requiresReview: [],
@@ -219,9 +220,14 @@ class PRMarkdownGenerator {
       const prolificCommenters = this.getProlificCommentersWithoutApproval(pr);
       const hasUnresolvedComments = this.hasUnresolvedComments(pr);
       const hasReviewOwnerApproval = this.hasReviewOwnerApproval(pr);
+      const isHighPriority = this.hasHighPriorityLabel(pr);
 
+      // High priority PRs get their own category regardless of other status
+      if (isHighPriority) {
+        categories.highPriority.push(pr);
+      }
       // Needs merging (2+ approvals, no unresolved comments, but no review owner approval)
-      if (approvalCount >= 2 && !hasUnresolvedComments && !hasReviewOwnerApproval) {
+      else if (approvalCount >= 2 && !hasUnresolvedComments && !hasReviewOwnerApproval) {
         categories.needsMerging.push(pr);
       }
       // Need one more approval (exactly 1 approval)
@@ -249,7 +255,7 @@ class PRMarkdownGenerator {
    * Check if a PR has high priority label
    */
   hasHighPriorityLabel(pr) {
-    return pr.labels.some(label => 
+    return pr.labels.some(label =>
       label.name.toLowerCase().includes('high priority') ||
       label.name.toLowerCase().includes('high-priority') ||
       label.name.toLowerCase().includes('priority : high') ||
@@ -265,10 +271,10 @@ class PRMarkdownGenerator {
     return prs.sort((a, b) => {
       const aHighPriority = this.hasHighPriorityLabel(a);
       const bHighPriority = this.hasHighPriorityLabel(b);
-      
+
       if (aHighPriority && !bHighPriority) return -1;
       if (!aHighPriority && bHighPriority) return 1;
-      
+
       // If both have same priority, sort by creation date (newest first)
       return new Date(b.created_at) - new Date(a.created_at);
     });
@@ -279,12 +285,25 @@ class PRMarkdownGenerator {
    */
   generateMarkdown(prs, owner, repo) {
     const categories = this.categorizePRs(prs);
-    
+
     let markdown = `# Pull Requests for ${owner}/${repo}\n\n`;
     markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
     markdown += `Total PRs: ${prs.length}\n\n`;
 
     // Add each category section
+    if (categories.highPriority.length > 0) {
+      markdown += `## High Priority :rotating_light:\n\n`;
+      categories.highPriority.forEach(pr => {
+        const approvals = this.getApprovals(pr);
+        const approvalCount = approvals.length;
+        const status = approvalCount === 0 ? 'needs review' :
+          approvalCount === 1 ? 'needs one more approval' :
+            'ready to merge';
+        markdown += `- [${pr.title}](${pr.html_url}) (${status})\n`;
+      });
+      markdown += `\n`;
+    }
+
     if (categories.needOneMoreApproval.length > 0) {
       markdown += `## Need one more approval :white_check_mark:\n\n`;
       categories.needOneMoreApproval.forEach(pr => {
@@ -347,24 +366,24 @@ class PRMarkdownGenerator {
     try {
       console.log('🔍 Parsing repository...');
       const { owner, repo } = this.parseRepository(repoInput);
-      
+
       console.log(`📡 Fetching PRs from ${owner}/${repo}...`);
       const prs = await this.fetchPullRequests(owner, repo);
-      
+
       console.log(`📝 Generating markdown for ${prs.length} PRs...`);
       const markdown = this.generateMarkdown(prs, owner, repo);
-      
+
       const fileName = outputFile || `${owner}-${repo}-prs.md`;
-      
+
       console.log(`💾 Writing to ${fileName}...`);
       fs.writeFileSync(fileName, markdown);
-      
+
       console.log(`✅ Successfully generated ${fileName}`);
-      
+
       // Show summary
       const highPriorityCount = prs.filter(pr => this.hasHighPriorityLabel(pr)).length;
       console.log(`📊 Summary: ${prs.length} total PRs, ${highPriorityCount} high priority`);
-      
+
       return fileName;
     } catch (error) {
       console.error(`❌ Error: ${error.message}`);
@@ -376,7 +395,7 @@ class PRMarkdownGenerator {
 // CLI Interface
 async function main() {
   const args = process.argv.slice(2);
-  
+
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     console.log(`
 PR Markdown Generator
