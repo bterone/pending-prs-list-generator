@@ -189,11 +189,15 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Check if bterone has approved the PR
+   * Check if the review owner has approved the PR
    */
-  hasBteroneApproval(pr) {
+  hasReviewOwnerApproval(pr) {
+    const reviewOwner = process.env.REVIEW_OWNER;
+    if (!reviewOwner) {
+      return false;
+    }
     const approvals = this.getApprovals(pr);
-    return approvals.some(approval => approval.user.login === 'bterone');
+    return approvals.some(approval => approval.user.login === reviewOwner);
   }
 
   /**
@@ -213,10 +217,10 @@ class PRMarkdownGenerator {
       const approvalCount = approvals.length;
       const prolificCommenters = this.getProlificCommentersWithoutApproval(pr);
       const hasUnresolvedComments = this.hasUnresolvedComments(pr);
-      const hasBteroneApproval = this.hasBteroneApproval(pr);
+      const hasReviewOwnerApproval = this.hasReviewOwnerApproval(pr);
 
-      // Needs merging (2+ approvals, no unresolved comments, but no bterone approval)
-      if (approvalCount >= 2 && !hasUnresolvedComments && !hasBteroneApproval) {
+      // Needs merging (2+ approvals, no unresolved comments, but no review owner approval)
+      if (approvalCount >= 2 && !hasUnresolvedComments && !hasReviewOwnerApproval) {
         categories.needsMerging.push(pr);
       }
       // Need one more approval (exactly 1 approval)
