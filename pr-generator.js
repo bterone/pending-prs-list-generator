@@ -226,21 +226,21 @@ class PRMarkdownGenerator {
       if (isHighPriority) {
         categories.highPriority.push(pr);
       }
+      // Has comments to fix
+      else if (hasUnresolvedComments) {
+        categories.hasCommentsToFix.push(pr);
+      }
       // Needs merging (2+ approvals, no unresolved comments, but no review owner approval)
       else if (approvalCount >= 2 && !hasUnresolvedComments && !hasReviewOwnerApproval) {
         categories.needsMerging.push(pr);
-      }
-      // Need one more approval (exactly 1 approval)
-      else if (approvalCount === 1) {
-        categories.needOneMoreApproval.push(pr);
       }
       // Needs approvals from prolific commenters
       else if (prolificCommenters.length > 0) {
         categories.needsProlificCommentersApproval.push(pr);
       }
-      // Has comments to fix
-      else if (hasUnresolvedComments) {
-        categories.hasCommentsToFix.push(pr);
+      // Need one more approval (exactly 1 approval)
+      else if (approvalCount === 1) {
+        categories.needOneMoreApproval.push(pr);
       }
       // Requires review (no approvals or reviews)
       else if (approvalCount === 0) {
