@@ -182,11 +182,89 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Check if PR has unresolved comments (assuming all comments are unresolved for now)
+   * Check if PR has comments from users who are NOT currently requested for review
+   * New criteria: commenters have left comments but are NOT re-requested or requested for review
    */
-  hasUnresolvedComments(pr) {
+  hasCommentsToFix(pr) {
     const comments = this.getAllComments(pr);
-    return comments.length > 0;
+    if (comments.length === 0) {
+      return false;
+    }
+
+    // Get all commenters (excluding PR owner)
+    const commenters = new Set();
+    comments.forEach(comment => {
+      if (comment.user.login !== pr.user.login) {
+        commenters.add(comment.user.login);
+      }
+    });
+
+    if (commenters.size === 0) {
+      return false;
+    }
+
+    // Get currently requested reviewers (including re-requested)
+    const requestedReviewers = new Set();
+    
+    // Add individual requested reviewers
+    if (pr.requested_reviewers) {
+      pr.requested_reviewers.forEach(reviewer => {
+        requestedReviewers.add(reviewer.login);
+      });
+    }
+    
+    // Add team requested reviewers
+    if (pr.requested_teams) {
+      pr.requested_teams.forEach(team => {
+        // Note: We can't easily get team members without additional API calls
+        // For now, we'll assume team requests don't affect individual commenters
+      });
+    }
+
+    // Check if any commenter is NOT currently requested for review
+    for (const commenter of commenters) {
+      if (!requestedReviewers.has(commenter)) {
+        return true; // Found a commenter who has comments but is not requested
+      }
+    }
+
+    return false; // All commenters are currently requested for review
+  }
+
+  /**
+   * Get prolific commenters who have been re-requested for review
+   * These are users with 3+ comments who are currently in requested_reviewers
+   */
+  getProlificCommentersReRequested(pr) {
+    const comments = this.getAllComments(pr);
+    const approvals = this.getApprovals(pr);
+    const approvedUsers = new Set(approvals.map(approval => approval.user.login));
+    const prOwner = pr.user.login;
+
+    // Get currently requested reviewers
+    const requestedReviewers = new Set();
+    if (pr.requested_reviewers) {
+      pr.requested_reviewers.forEach(reviewer => {
+        requestedReviewers.add(reviewer.login);
+      });
+    }
+
+    // Count comments by user
+    const commentCounts = new Map();
+    comments.forEach(comment => {
+      const user = comment.user.login;
+      commentCounts.set(user, (commentCounts.get(user) || 0) + 1);
+    });
+
+    // Find users with 3+ comments who are currently requested and haven't approved (excluding PR owner)
+    const prolificCommentersReRequested = [];
+    for (const [user, count] of commentCounts.entries()) {
+      if (count >= 3 && requestedReviewers.has(user) && !approvedUsers.has(user) && user !== prOwner) {
+        prolificCommentersReRequested.push(user);
+      }
+    }
+
+    return prolificCommentersReRequested;
   }
 
   /**
@@ -217,8 +295,9 @@ class PRMarkdownGenerator {
     prs.forEach(pr => {
       const approvals = this.getApprovals(pr);
       const approvalCount = approvals.length;
-      const prolificCommenters = this.getProlificCommentersWithoutApproval(pr);
-      const hasUnresolvedComments = this.hasUnresolvedComments(pr);
+      const prolificCommentersReRequested = this.getProlificCommentersReRequested(pr);
+      const prolificCommentersWithoutApproval = this.getProlificCommentersWithoutApproval(pr);
+      const hasCommentsToFixFlag = this.hasCommentsToFix(pr);
       const hasReviewOwnerApproval = this.hasReviewOwnerApproval(pr);
       const isHighPriority = this.hasHighPriorityLabel(pr);
 
@@ -226,16 +305,20 @@ class PRMarkdownGenerator {
       if (isHighPriority) {
         categories.highPriority.push(pr);
       }
-      // Has comments to fix
-      else if (hasUnresolvedComments) {
+      // Prioritize prolific commenters who have been re-requested (3+ comments and currently requested)
+      else if (prolificCommentersReRequested.length > 0) {
+        categories.needsProlificCommentersApproval.push(pr);
+      }
+      // Has comments to fix (commenters have left comments but are NOT requested for review)
+      else if (hasCommentsToFixFlag) {
         categories.hasCommentsToFix.push(pr);
       }
-      // Needs merging (2+ approvals, no unresolved comments, but no review owner approval)
-      else if (approvalCount >= 2 && !hasUnresolvedComments && !hasReviewOwnerApproval) {
+      // Needs merging (2+ approvals, no comments to fix, but no review owner approval)
+      else if (approvalCount >= 2 && !hasCommentsToFixFlag && !hasReviewOwnerApproval) {
         categories.needsMerging.push(pr);
       }
-      // Needs approvals from prolific commenters
-      else if (prolificCommenters.length > 0) {
+      // Needs approvals from prolific commenters (3+ comments but not currently requested)
+      else if (prolificCommentersWithoutApproval.length > 0) {
         categories.needsProlificCommentersApproval.push(pr);
       }
       // Need one more approval (exactly 1 approval)
@@ -292,7 +375,7 @@ class PRMarkdownGenerator {
 
     // Add each category section
     if (categories.highPriority.length > 0) {
-      markdown += `## High Priority :rotating_light:\n\n`;
+      markdown += `## High Priority :rotating_light:\n`;
       categories.highPriority.forEach(pr => {
         const approvals = this.getApprovals(pr);
         const approvalCount = approvals.length;
@@ -305,7 +388,7 @@ class PRMarkdownGenerator {
     }
 
     if (categories.needOneMoreApproval.length > 0) {
-      markdown += `## Need one more approval :white_check_mark:\n\n`;
+      markdown += `## Need one more approval :white_check_mark:\n`;
       categories.needOneMoreApproval.forEach(pr => {
         const approvals = this.getApprovals(pr);
         const approverName = approvals.length > 0 ? approvals[0].user.login : 'unknown';
@@ -315,17 +398,29 @@ class PRMarkdownGenerator {
     }
 
     if (categories.needsProlificCommentersApproval.length > 0) {
-      markdown += `## Needs approvals from previous :sparkles: prolific :sparkles: commenters\n\n`;
+      markdown += `## Needs approvals from previous :sparkles: prolific :sparkles: commenters\n`;
       categories.needsProlificCommentersApproval.forEach(pr => {
-        const prolificCommenters = this.getProlificCommentersWithoutApproval(pr);
-        const commentersList = prolificCommenters.join(', ');
-        markdown += `- [${pr.title}](${pr.html_url}) (waiting for: ${commentersList})\n`;
+        const prolificCommentersReRequested = this.getProlificCommentersReRequested(pr);
+        const prolificCommentersWithoutApproval = this.getProlificCommentersWithoutApproval(pr);
+        
+        let commentersList = '';
+        let status = '';
+        
+        if (prolificCommentersReRequested.length > 0) {
+          commentersList = prolificCommentersReRequested.join(', ');
+          status = 're-requested';
+        } else if (prolificCommentersWithoutApproval.length > 0) {
+          commentersList = prolificCommentersWithoutApproval.join(', ');
+          status = 'waiting for';
+        }
+        
+        markdown += `- [${pr.title}](${pr.html_url}) (${status}: ${commentersList})\n`;
       });
       markdown += `\n`;
     }
 
     if (categories.requiresReview.length > 0) {
-      markdown += `## Requires review :writing_hand:\n\n`;
+      markdown += `## Requires review :writing_hand:\n`;
       categories.requiresReview.forEach(pr => {
         markdown += `- [${pr.title}](${pr.html_url})\n`;
       });
@@ -333,7 +428,7 @@ class PRMarkdownGenerator {
     }
 
     if (categories.hasCommentsToFix.length > 0) {
-      markdown += `## Have some comments to fix :wrench:\n\n`;
+      markdown += `## Have some comments to fix :wrench:\n`;
       categories.hasCommentsToFix.forEach(pr => {
         const comments = this.getAllComments(pr);
         const commentCount = comments.length;
@@ -343,7 +438,7 @@ class PRMarkdownGenerator {
     }
 
     if (categories.needsMerging.length > 0) {
-      markdown += `## Needs merging (Reminder for me :zany_face:)\n\n`;
+      markdown += `## Needs merging (Reminder for me :zany_face:)\n`;
       categories.needsMerging.forEach(pr => {
         const approvals = this.getApprovals(pr);
         const approvalCount = approvals.length;
