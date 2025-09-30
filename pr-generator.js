@@ -205,14 +205,14 @@ class PRMarkdownGenerator {
 
     // Get currently requested reviewers (including re-requested)
     const requestedReviewers = new Set();
-    
+
     // Add individual requested reviewers
     if (pr.requested_reviewers) {
       pr.requested_reviewers.forEach(reviewer => {
         requestedReviewers.add(reviewer.login);
       });
     }
-    
+
     // Add team requested reviewers
     if (pr.requested_teams) {
       pr.requested_teams.forEach(team => {
@@ -365,13 +365,33 @@ class PRMarkdownGenerator {
 
   /**
    * Generate markdown content from categorized PRs
+   * Can handle single or multiple repositories
    */
-  generateMarkdown(prs, owner, repo) {
-    const categories = this.categorizePRs(prs);
+  generateMarkdown(prsData) {
+    // Handle both single repo (legacy) and multiple repos format
+    const isMultiRepo = Array.isArray(prsData);
+    const repoDataArray = isMultiRepo ? prsData : [prsData];
 
-    let markdown = `# Pull Requests for ${owner}/${repo}\n\n`;
-    markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
-    markdown += `Total PRs: ${prs.length}\n\n`;
+    let markdown = '';
+
+    // Combine all PRs from all repositories
+    const allPRs = repoDataArray.reduce((acc, data) => acc.concat(data.prs), []);
+
+    // Generate header
+    if (isMultiRepo && repoDataArray.length > 1) {
+      markdown += `# Pull Requests Summary\n\n`;
+      markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
+      markdown += `Repositories: ${repoDataArray.length}\n`;
+      markdown += `Total PRs: ${allPRs.length}\n\n`;
+    } else {
+      const { owner, repo } = repoDataArray[0];
+      markdown += `# Pull Requests for ${owner}/${repo}\n\n`;
+      markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
+      markdown += `Total PRs: ${allPRs.length}\n\n`;
+    }
+
+    // Categorize all PRs together
+    const categories = this.categorizePRs(allPRs);
 
     // Add each category section
     if (categories.highPriority.length > 0) {
@@ -402,10 +422,10 @@ class PRMarkdownGenerator {
       categories.needsProlificCommentersApproval.forEach(pr => {
         const prolificCommentersReRequested = this.getProlificCommentersReRequested(pr);
         const prolificCommentersWithoutApproval = this.getProlificCommentersWithoutApproval(pr);
-        
+
         let commentersList = '';
         let status = '';
-        
+
         if (prolificCommentersReRequested.length > 0) {
           commentersList = prolificCommentersReRequested.join(', ');
           status = 're-requested';
@@ -413,7 +433,7 @@ class PRMarkdownGenerator {
           commentersList = prolificCommentersWithoutApproval.join(', ');
           status = 'waiting for';
         }
-        
+
         markdown += `- [${pr.title}](${pr.html_url}) (${status}: ${commentersList})\n`;
       });
       markdown += `\n`;
@@ -447,7 +467,7 @@ class PRMarkdownGenerator {
       markdown += `\n`;
     }
 
-    if (prs.length === 0) {
+    if (allPRs.length === 0) {
       markdown += `No open pull requests found.\n`;
     }
 
@@ -455,20 +475,57 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Main function to generate PR markdown
+   * Main function to generate PR markdown for single or multiple repositories
    */
-  async generatePRMarkdown(repoInput, outputFile = null) {
+  async generatePRMarkdown(repoInputs, outputFile = null) {
     try {
-      console.log('🔍 Parsing repository...');
-      const { owner, repo } = this.parseRepository(repoInput);
+      // Handle both single string and array of strings
+      const repositories = Array.isArray(repoInputs) ? repoInputs : [repoInputs];
 
-      console.log(`📡 Fetching PRs from ${owner}/${repo}...`);
-      const prs = await this.fetchPullRequests(owner, repo);
+      console.log(`🔍 Processing ${repositories.length} repository/repositories...\n`);
 
-      console.log(`📝 Generating markdown for ${prs.length} PRs...`);
-      const markdown = this.generateMarkdown(prs, owner, repo);
+      const allRepoData = [];
+      let totalPRs = 0;
+      let totalHighPriority = 0;
 
-      const fileName = outputFile || `${owner}-${repo}-prs.md`;
+      // Fetch PRs from each repository
+      for (const repoInput of repositories) {
+        try {
+          console.log(`📍 Parsing repository: ${repoInput}`);
+          const { owner, repo } = this.parseRepository(repoInput);
+
+          console.log(`📡 Fetching PRs from ${owner}/${repo}...`);
+          const prs = await this.fetchPullRequests(owner, repo);
+
+          const highPriorityCount = prs.filter(pr => this.hasHighPriorityLabel(pr)).length;
+          console.log(`✓ Found ${prs.length} PRs (${highPriorityCount} high priority)\n`);
+
+          allRepoData.push({ owner, repo, prs });
+          totalPRs += prs.length;
+          totalHighPriority += highPriorityCount;
+        } catch (error) {
+          console.error(`❌ Error processing ${repoInput}: ${error.message}`);
+          console.log('Continuing with remaining repositories...\n');
+        }
+      }
+
+      if (allRepoData.length === 0) {
+        throw new Error('No repositories were successfully processed');
+      }
+
+      console.log(`📝 Generating markdown for ${totalPRs} total PRs...`);
+      const markdown = this.generateMarkdown(allRepoData);
+
+      // Generate filename
+      let fileName;
+      if (outputFile) {
+        fileName = outputFile;
+      } else if (allRepoData.length === 1) {
+        const { owner, repo } = allRepoData[0];
+        fileName = `${owner}-${repo}-prs.md`;
+      } else {
+        fileName = `combined-prs-${new Date().toISOString().split('T')[0]}.md`;
+      }
 
       console.log(`💾 Writing to ${fileName}...`);
       fs.writeFileSync(fileName, markdown);
@@ -476,8 +533,7 @@ class PRMarkdownGenerator {
       console.log(`✅ Successfully generated ${fileName}`);
 
       // Show summary
-      const highPriorityCount = prs.filter(pr => this.hasHighPriorityLabel(pr)).length;
-      console.log(`📊 Summary: ${prs.length} total PRs, ${highPriorityCount} high priority`);
+      console.log(`📊 Summary: ${allRepoData.length} repositories, ${totalPRs} total PRs, ${totalHighPriority} high priority`);
 
       return fileName;
     } catch (error) {
@@ -494,36 +550,61 @@ async function main() {
   if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
     console.log(`
 PR Markdown Generator
-====================
 
-Usage: node pr-generator.js <repository> [output-file]
+Usage: node pr-generator.js <repository1> [repository2] [...] [--output <filename>]
 
 Arguments:
-  repository    GitHub repository (owner/repo or GitHub URL)
-  output-file   Optional output filename (default: owner-repo-prs.md)
+  repository    One or more GitHub repositories (owner/repo or GitHub URL)
+  --output      Optional output filename (default: owner-repo-prs.md for single repo,
+                combined-prs-YYYY-MM-DD.md for multiple repos)
 
 Examples:
-  node pr-generator.js facebook/react
-  node pr-generator.js https://github.com/microsoft/vscode
-  node pr-generator.js owner/repo my-prs.md
+  Single repository:
+    node pr-generator.js facebook/react
+    node pr-generator.js https://github.com/microsoft/vscode
+    node pr-generator.js owner/repo --output my-prs.md
+
+  Multiple repositories:
+    node pr-generator.js facebook/react microsoft/vscode
+    node pr-generator.js owner/repo1 owner/repo2 owner/repo3
+    node pr-generator.js repo1 repo2 --output combined.md
 
 Environment Variables:
   GITHUB_TOKEN  GitHub personal access token (recommended for higher rate limits)
+  REVIEW_OWNER  Username to check for review owner approval
 
 Features:
-  - Fetches all open pull requests
+  - Fetches all open pull requests from one or multiple repositories
   - Prioritizes PRs with "high priority", "urgent", or "critical" labels
   - Generates organized markdown with PR titles as clickable links
-  - Includes author, creation date, and labels for each PR
+  - Combines PRs from multiple repositories into a single report
+  - Categorizes PRs by review status and priority
     `);
     process.exit(0);
   }
 
-  const repository = args[0];
-  const outputFile = args[1];
+  // Parse arguments
+  let repositories = [];
+  let outputFile = null;
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--output' || args[i] === '-o') {
+      if (i + 1 < args.length) {
+        outputFile = args[i + 1];
+        i++; // Skip next argument
+      }
+    } else {
+      repositories.push(args[i]);
+    }
+  }
+
+  if (repositories.length === 0) {
+    console.error('❌ Error: No repositories specified');
+    process.exit(1);
+  }
 
   const generator = new PRMarkdownGenerator();
-  await generator.generatePRMarkdown(repository, outputFile);
+  await generator.generatePRMarkdown(repositories, outputFile);
 }
 
 // Run if called directly
