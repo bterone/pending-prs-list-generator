@@ -363,12 +363,24 @@ class PRMarkdownGenerator {
   }
 
   /**
+   * Return true if run `a` is more recent than run `b`
+   * (by start time, falling back to completion time, then id)
+   */
+  isNewerRun(a, b) {
+    const ta = new Date(a.started_at || a.completed_at || 0).getTime();
+    const tb = new Date(b.started_at || b.completed_at || 0).getTime();
+    if (ta !== tb) return ta > tb;
+    return (a.id || 0) > (b.id || 0);
+  }
+
+  /**
    * Get the names of failing status checks / check runs for display
    */
   getFailedCheckNames(pr) {
     const names = [];
 
-    // Legacy combined commit status API (external CI reported via statuses)
+    // Legacy combined commit status API. The rollup `state` and the `statuses`
+    // list already reflect only the latest status per context, so no dedup needed.
     const combinedState = pr.combinedStatus?.state;
     if (combinedState === 'failure' || combinedState === 'error') {
       (pr.combinedStatus.statuses || []).forEach(status => {
@@ -378,20 +390,29 @@ class PRMarkdownGenerator {
       });
     }
 
-    // Checks API (GitHub Actions and most modern CI)
-    const failingConclusions = new Set([
-      'failure',
-      'timed_out',
-      'cancelled',
-      'action_required'
-    ]);
+    // Checks API (GitHub Actions and most modern CI). GitHub returns one run per
+    // check suite, so a single commit can have several runs sharing a name (e.g.
+    // a superseded run plus its re-run). Keep only the most recent run per name,
+    // mirroring how GitHub's UI decides a check's status.
+    const latestByName = new Map();
     (pr.checkRuns || []).forEach(run => {
-      if (run.status === 'completed' && failingConclusions.has(run.conclusion)) {
-        names.push(run.name);
+      const existing = latestByName.get(run.name);
+      if (!existing || this.isNewerRun(run, existing)) {
+        latestByName.set(run.name, run);
       }
     });
 
-    return names;
+    // Only genuine failures count as "broken". `cancelled` means the run was
+    // superseded/concurrency-cancelled, and `action_required`/`neutral`/`skipped`
+    // are not failures, so none of those are treated as broken CI.
+    const failingConclusions = new Set(['failure', 'timed_out']);
+    for (const run of latestByName.values()) {
+      if (run.status === 'completed' && failingConclusions.has(run.conclusion)) {
+        names.push(run.name);
+      }
+    }
+
+    return [...new Set(names)];
   }
 
   /**
