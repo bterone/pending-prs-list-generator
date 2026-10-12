@@ -9,8 +9,10 @@ A Node.js script that fetches pull requests from one or multiple GitHub reposito
 - 📝 Generates clean markdown with clickable PR titles
 - 🔄 Handles pagination for repositories with many PRs
 - 🔐 Supports GitHub token authentication for higher rate limits
-- 🔀 **NEW:** Supports multiple repositories - combines PRs from all repos into unified categories
+- 🔀 Supports multiple repositories - combines PRs from all repos into unified categories
 - 📊 Categorizes PRs by review status (needs approval, has comments to fix, etc.)
+- ❌ **NEW:** Flags PRs with failing CI using the commit status and check-runs APIs
+- 🧵 **NEW:** Distinguishes open vs resolved review threads via the GraphQL API (requires a token)
 
 ## Installation
 
@@ -76,6 +78,13 @@ Total PRs: 45
 - [Critical bug fix](https://github.com/bterone/repo/pull/123) (needs review)
 - [Security patch](https://github.com/bterone/repo/pull/124) (ready to merge)
 
+## Have some comments to fix :wrench:
+- [API improvements](https://github.com/bterone/repo/pull/131) (5 comments)
+- [UI enhancements](https://github.com/bterone/repo/pull/132) (3 comments)
+
+## Broken CI :x:
+- [Flaky integration test](https://github.com/bterone/repo/pull/134) (failed: build, e2e-tests)
+
 ## Need one more approval :white_check_mark:
 - [Fix critical memory leak in hooks](https://github.com/bterone/repo/pull/125) (approved by user1)
 - [Update dependencies](https://github.com/bterone/repo/pull/126) (approved by user2)
@@ -88,12 +97,11 @@ Total PRs: 45
 - [Documentation update](https://github.com/bterone/repo/pull/129)
 - [Code cleanup](https://github.com/bterone/repo/pull/130)
 
-## Have some comments to fix :wrench:
-- [API improvements](https://github.com/bterone/repo/pull/131) (5 comments)
-- [UI enhancements](https://github.com/bterone/repo/pull/132) (3 comments)
-
 ## Needs merging (Reminder for me :zany_face:)
 - [Performance optimization](https://github.com/bterone/repo/pull/133) (2 approvals)
+
+## Uncategorized :grey_question:
+- [Edge case not matched by any rule](https://github.com/bterone/repo/pull/135)
 ```
 
 #### Multiple Repositories
@@ -120,14 +128,18 @@ Note: When using multiple repositories, PRs from all repos are combined into uni
 
 ## PR Categories
 
-The script organizes PRs into the following categories (in priority order):
+The script organizes PRs into the following categories. A PR lands in the **first** category it matches (priority order):
 
 1. **High Priority** 🚨 - PRs with priority labels (urgent, critical, high priority)
-2. **Need one more approval** ✅ - PRs with exactly 1 approval
-3. **Needs approvals from prolific commenters** ✨ - PRs where users with 3+ comments need to approve
-4. **Requires review** ✍️ - PRs with no approvals yet
-5. **Have some comments to fix** 🔧 - PRs with unresolved comments
-6. **Needs merging** 🤪 - PRs with 2+ approvals ready to merge
+2. **Have some comments to fix** 🔧 - Open (unresolved) review threads, and/or commenters who have not yet been re-requested
+3. **Broken CI** ❌ - One or more failing status checks / check runs on the head commit
+4. **Need one more approval** ✅ - PRs with exactly 1 approval (minimum target is 2). Ranks above prolific commenters
+5. **Needs approvals from prolific commenters** ✨ - PRs where users with 2+ comments still need to approve
+6. **Requires review** ✍️ - PRs with no approvals and nothing outstanding
+7. **Needs merging** 🤪 - PRs with 2+ approvals and no blockers, just waiting to be merged (merged/closed PRs drop off automatically since only open PRs are fetched)
+8. **Uncategorized** ❓ - Safety-net catch-all; normally empty
+
+> **Note:** Open vs resolved review thread detection uses GitHub's GraphQL API and requires a `GITHUB_TOKEN`. Without a token, "comments to fix" falls back to the re-request heuristic only (a commenter who has not been re-requested for review).
 
 ## Supported Priority Labels
 
@@ -139,8 +151,7 @@ The script automatically detects these labels as high priority:
 
 ## Environment Variables
 
-- `GITHUB_TOKEN` - GitHub personal access token (recommended for higher rate limits and private repos)
-- `REVIEW_OWNER` - Username to check for review owner approval in the "Needs merging" category
+- `GITHUB_TOKEN` - GitHub personal access token. Recommended for higher rate limits and private repos, and **required** to detect resolved vs open review threads (the GraphQL API does not allow anonymous access)
 
 ## Requirements
 
