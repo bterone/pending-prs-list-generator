@@ -11,8 +11,9 @@ A Node.js script that fetches pull requests from one or multiple GitHub reposito
 - 🔐 Supports GitHub token authentication for higher rate limits
 - 🔀 Supports multiple repositories - combines PRs from all repos into unified categories
 - 📊 Categorizes PRs by review status (needs approval, has comments to fix, etc.)
-- ❌ **NEW:** Flags PRs with failing CI using the commit status and check-runs APIs
-- 🧵 **NEW:** Distinguishes open vs resolved review threads via the GraphQL API (requires a token)
+- ❌ Flags PRs with failing CI using the commit status and check-runs APIs
+- 🧵 Distinguishes open vs resolved review threads via the GraphQL API (requires a token)
+- 🤪 **NEW:** Reminds you about your own unsubmitted draft (pending) reviews
 
 ## Installation
 
@@ -78,19 +79,21 @@ Total PRs: 45
 - [Critical bug fix](https://github.com/bterone/repo/pull/123) (needs review)
 - [Security patch](https://github.com/bterone/repo/pull/124) (ready to merge)
 
-## Have some comments to fix :wrench:
-- [API improvements](https://github.com/bterone/repo/pull/131) (5 comments)
-- [UI enhancements](https://github.com/bterone/repo/pull/132) (3 comments)
+## Review pending comments (Reminder for me :zany_face:)
+- [Refactor billing module](https://github.com/bterone/repo/pull/136) (2 pending comments)
 
 ## Broken CI :x:
 - [Flaky integration test](https://github.com/bterone/repo/pull/134) (failed: build, e2e-tests)
+
+## Have some comments to fix :wrench:
+- [API improvements](https://github.com/bterone/repo/pull/131) (5 open threads)
+- [UI enhancements](https://github.com/bterone/repo/pull/132) (3 open threads)
 
 ## Need one more approval :white_check_mark:
 - [Fix critical memory leak in hooks](https://github.com/bterone/repo/pull/125) (approved by user1)
 - [Update dependencies](https://github.com/bterone/repo/pull/126) (approved by user2)
 
 ## Needs approvals from previous :sparkles: prolific :sparkles: commenters
-- [Refactor authentication](https://github.com/bterone/repo/pull/127) (re-requested: user3)
 - [Add new feature](https://github.com/bterone/repo/pull/128) (waiting for: user4)
 
 ## Requires review :writing_hand:
@@ -131,15 +134,18 @@ Note: When using multiple repositories, PRs from all repos are combined into uni
 The script organizes PRs into the following categories. A PR lands in the **first** category it matches (priority order):
 
 1. **High Priority** 🚨 - PRs with priority labels (urgent, critical, high priority)
-2. **Have some comments to fix** 🔧 - Open (unresolved) review threads, and/or commenters who have not yet been re-requested
-3. **Broken CI** ❌ - One or more failing status checks / check runs on the head commit
-4. **Need one more approval** ✅ - PRs with exactly 1 approval (minimum target is 2). Ranks above prolific commenters
-5. **Needs approvals from prolific commenters** ✨ - PRs where users with 2+ comments still need to approve
-6. **Requires review** ✍️ - PRs with no approvals and nothing outstanding
-7. **Needs merging** 🤪 - PRs with 2+ approvals and no blockers, just waiting to be merged (merged/closed PRs drop off automatically since only open PRs are fetched)
-8. **Uncategorized** ❓ - Safety-net catch-all; normally empty
+2. **Review pending comments** 🤪 - You have an unsubmitted draft (pending) review on the PR - a reminder to finish and submit it
+3. **Broken CI** ❌ - One or more failing status checks / check runs on the head commit (latest run per check only; superseded/cancelled runs are ignored)
+4. **Have some comments to fix** 🔧 - An unresolved review thread whose reviewer has **not** been re-requested, so the ball is in the author's court
+5. **Need one more approval** ✅ - PRs with exactly 1 approval (minimum target is 2). Ranks above prolific commenters
+6. **Needs approvals from prolific commenters** ✨ - Someone with 2+ comments hasn't approved and isn't currently re-requested (excludes you and anyone whose re-review is already pending)
+7. **Requires review** ✍️ - Fewer than 2 approvals with nothing outstanding: no comments, or all threads resolved, or the reviewers have been re-requested. Effectively your review queue
+8. **Needs merging** 🤪 - PRs with 2+ approvals and no blockers, just waiting to be merged (merged/closed PRs drop off automatically since only open PRs are fetched)
+9. **Uncategorized** ❓ - Safety-net catch-all; normally empty
 
-> **Note:** Open vs resolved review thread detection uses GitHub's GraphQL API and requires a `GITHUB_TOKEN`. Without a token, "comments to fix" falls back to the re-request heuristic only (a commenter who has not been re-requested for review).
+The key distinction between **Have some comments to fix** and **Requires review** is *whose court the ball is in*: an open thread whose reviewer has not been re-requested means the author still owes a response (comments to fix), whereas a resolved thread or a re-requested reviewer means it's back to the reviewers (requires review).
+
+> **Note:** Review-thread resolution and the "Review pending comments" reminder use GitHub's GraphQL/authenticated API and require a `GITHUB_TOKEN`. Without a token, "comments to fix" falls back to a re-request heuristic only (any commenter not currently re-requested), and draft-review reminders are unavailable. Team review requests are not expanded into individual members, so a reviewer requested only via a team is not counted as re-requested.
 
 ## Supported Priority Labels
 
@@ -151,7 +157,7 @@ The script automatically detects these labels as high priority:
 
 ## Environment Variables
 
-- `GITHUB_TOKEN` - GitHub personal access token. Recommended for higher rate limits and private repos, and **required** to detect resolved vs open review threads (the GraphQL API does not allow anonymous access)
+- `GITHUB_TOKEN` - GitHub personal access token. Recommended for higher rate limits and private repos, and **required** to detect resolved vs open review threads and your own pending draft reviews (the GraphQL API does not allow anonymous access)
 
 ## Requirements
 

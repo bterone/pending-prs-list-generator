@@ -7,6 +7,8 @@ class PRMarkdownGenerator {
   constructor() {
     this.githubToken = process.env.GITHUB_TOKEN;
     this.baseURL = 'https://api.github.com';
+    // Login of the authenticated token owner ("me"); resolved lazily.
+    this.viewerLogin = null;
   }
 
   /**
@@ -45,6 +47,17 @@ class PRMarkdownGenerator {
 
       if (this.githubToken) {
         headers['Authorization'] = `token ${this.githubToken}`;
+      }
+
+      // Resolve "me" (the token owner) once, so we can tell our own review
+      // activity apart from other reviewers'.
+      if (this.githubToken && !this.viewerLogin) {
+        try {
+          const me = await axios.get(`${this.baseURL}/user`, { headers });
+          this.viewerLogin = me.data.login;
+        } catch (error) {
+          this.viewerLogin = null;
+        }
       }
 
       let allPRs = [];
@@ -142,10 +155,10 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Fetch review thread resolution state via the GraphQL API.
-   * REST does not expose whether a review thread is resolved, so we query
-   * reviewThreads directly. Requires an authenticated token; returns the
-   * threads as { isResolved, authorLogin, authorType }.
+   * Fetch review threads via the GraphQL API. REST does not expose whether a
+   * thread is resolved, nor whether a comment is a pending (draft) one, so we
+   * query reviewThreads directly. Requires an authenticated token. Returns each
+   * thread as { isResolved, comments: [{ login, type, state }] }.
    */
   async fetchReviewThreads(owner, repo, number, headers) {
     const query = `
@@ -155,8 +168,9 @@ class PRMarkdownGenerator {
             reviewThreads(first: 100) {
               nodes {
                 isResolved
-                comments(first: 1) {
+                comments(first: 50) {
                   nodes {
+                    state
                     author { login __typename }
                   }
                 }
@@ -176,14 +190,14 @@ class PRMarkdownGenerator {
     const threads =
       response.data?.data?.repository?.pullRequest?.reviewThreads?.nodes || [];
 
-    return threads.map(thread => {
-      const author = thread.comments?.nodes?.[0]?.author;
-      return {
-        isResolved: thread.isResolved,
-        authorLogin: author?.login || null,
-        authorType: author?.__typename || null
-      };
-    });
+    return threads.map(thread => ({
+      isResolved: thread.isResolved,
+      comments: (thread.comments?.nodes || []).map(c => ({
+        login: c.author?.login || null,
+        type: c.author?.__typename || null,
+        state: c.state || null
+      }))
+    }));
   }
 
   /**
@@ -207,6 +221,15 @@ class PRMarkdownGenerator {
   }
 
   /**
+   * True when a login is a bot rather than a real reviewer
+   */
+  isBot(login, type) {
+    if (!login) return true;
+    if (type === 'Bot') return true;
+    return login.includes('bot') || login === 'gitstream-cm';
+  }
+
+  /**
    * Get all comments from real users (excluding bots)
    */
   getAllComments(pr) {
@@ -217,149 +240,141 @@ class PRMarkdownGenerator {
 
     // Filter out bot comments (specifically gitstream-cm and other common bots)
     return allComments.filter(comment =>
-      !comment.user.login.includes('bot') &&
-      comment.user.login !== 'gitstream-cm' &&
-      comment.user.type !== 'Bot'
+      !this.isBot(comment.user.login, comment.user.type)
     );
   }
 
   /**
-   * Get commenters who have made 2+ comments and haven't approved
+   * Get the set of logins currently requested (or re-requested) for review
+   */
+  getRequestedReviewers(pr) {
+    return new Set((pr.requested_reviewers || []).map(r => r.login));
+    // Note: team review requests (pr.requested_teams) are not expanded into
+    // individual members; resolving those would need extra API calls.
+  }
+
+  /**
+   * Get the unresolved review threads that are awaiting the PR author.
+   * A thread counts when it is not resolved and has at least one SUBMITTED
+   * comment from a real reviewer (not the PR author, not a bot). Pending
+   * (draft) comments are ignored - those belong to the viewer's own unsent
+   * review, not to the author's to-do list.
+   * Returns [{ reviewers: [login, ...] }].
+   */
+  getOpenThreads(pr) {
+    if (!pr.reviewThreads) return [];
+
+    const author = pr.user.login;
+    const open = [];
+
+    for (const thread of pr.reviewThreads) {
+      if (thread.isResolved) continue;
+
+      const reviewers = new Set();
+      for (const comment of thread.comments) {
+        if (comment.state && comment.state !== 'SUBMITTED') continue; // skip drafts
+        if (comment.login === author) continue;
+        if (this.isBot(comment.login, comment.type)) continue;
+        reviewers.add(comment.login);
+      }
+
+      if (reviewers.size > 0) open.push({ reviewers: [...reviewers] });
+    }
+
+    return open;
+  }
+
+  /**
+   * Check if the PR has comments for the author to fix.
+   * The ball is in the author's court when there is an open (unresolved) thread
+   * whose reviewer has NOT been re-requested. If every open thread's reviewer is
+   * currently re-requested, the author has responded and it is review time again
+   * (handled by "Requires review").
+   */
+  hasCommentsToFix(pr) {
+    const requested = this.getRequestedReviewers(pr);
+
+    // Preferred path: use real thread-resolution data from GraphQL
+    if (pr.reviewThreads) {
+      return this.getOpenThreads(pr).some(thread =>
+        thread.reviewers.some(reviewer => !requested.has(reviewer))
+      );
+    }
+
+    // Fallback (no token / GraphQL unavailable): any non-bot commenter who has
+    // not been re-requested implies there is still something for the author.
+    const comments = this.getAllComments(pr);
+    if (comments.length === 0) return false;
+
+    const commenters = new Set(
+      comments.map(c => c.user.login).filter(login => login !== pr.user.login)
+    );
+    for (const commenter of commenters) {
+      if (!requested.has(commenter)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when the viewer (me) has a pending/draft review that has not been
+   * submitted yet. GitHub only returns a PENDING review for the token owner.
+   */
+  hasPendingReviewByViewer(pr) {
+    return (pr.reviews || []).some(review =>
+      review.state === 'PENDING' &&
+      (!this.viewerLogin || review.user?.login === this.viewerLogin)
+    );
+  }
+
+  /**
+   * Count the viewer's own pending (draft) review comments, for display.
+   */
+  getMyPendingCommentCount(pr) {
+    if (!pr.reviewThreads) return 0;
+
+    let count = 0;
+    pr.reviewThreads.forEach(thread => {
+      thread.comments.forEach(comment => {
+        if (comment.state === 'PENDING' &&
+          (!this.viewerLogin || comment.login === this.viewerLogin)) {
+          count++;
+        }
+      });
+    });
+    return count;
+  }
+
+  /**
+   * Get commenters whose explicit approval is still outstanding.
+   * These are users with 2+ comments who have not approved, excluding the PR
+   * author, the viewer (me - my own approvals surface under "Requires review"),
+   * and anyone currently re-requested (the ball is in their court as a reviewer,
+   * so the PR is in review, not waiting on a nudge).
    */
   getProlificCommentersWithoutApproval(pr) {
     const comments = this.getAllComments(pr);
-    const approvals = this.getApprovals(pr);
-    const approvedUsers = new Set(approvals.map(approval => approval.user.login));
+    const approvedUsers = new Set(this.getApprovals(pr).map(a => a.user.login));
+    const requested = this.getRequestedReviewers(pr);
     const prOwner = pr.user.login;
 
-    // Count comments by user
     const commentCounts = new Map();
     comments.forEach(comment => {
       const user = comment.user.login;
       commentCounts.set(user, (commentCounts.get(user) || 0) + 1);
     });
 
-    // Find users with 2+ comments who haven't approved (excluding PR owner)
     const prolificCommenters = [];
     for (const [user, count] of commentCounts.entries()) {
-      if (count >= 2 && !approvedUsers.has(user) && user !== prOwner) {
+      if (count >= 2 &&
+        !approvedUsers.has(user) &&
+        user !== prOwner &&
+        user !== this.viewerLogin &&
+        !requested.has(user)) {
         prolificCommenters.push(user);
       }
     }
 
     return prolificCommenters;
-  }
-
-  /**
-   * Check whether the PR has any unresolved review threads (open comments).
-   * Uses GraphQL resolution data; excludes the PR owner's own threads and bots.
-   * Returns false when thread data is unavailable (no token / fetch failed).
-   */
-  hasUnresolvedThreads(pr) {
-    if (!pr.reviewThreads) {
-      return false;
-    }
-
-    return pr.reviewThreads.some(thread => {
-      if (thread.isResolved) return false;
-
-      const login = thread.authorLogin;
-      if (!login) return false;
-      if (login === pr.user.login) return false; // PR owner's own thread
-      if (thread.authorType === 'Bot') return false;
-      if (login.includes('bot') || login === 'gitstream-cm') return false;
-
-      return true;
-    });
-  }
-
-  /**
-   * Check if the PR has comments to fix.
-   * Criteria: there are open (unresolved) review threads, AND/OR a commenter
-   * has left feedback but has NOT been re-requested for review yet.
-   */
-  hasCommentsToFix(pr) {
-    // Concrete open comments: any unresolved review thread
-    if (this.hasUnresolvedThreads(pr)) {
-      return true;
-    }
-
-    const comments = this.getAllComments(pr);
-    if (comments.length === 0) {
-      return false;
-    }
-
-    // Get all commenters (excluding PR owner)
-    const commenters = new Set();
-    comments.forEach(comment => {
-      if (comment.user.login !== pr.user.login) {
-        commenters.add(comment.user.login);
-      }
-    });
-
-    if (commenters.size === 0) {
-      return false;
-    }
-
-    // Get currently requested reviewers (including re-requested)
-    const requestedReviewers = new Set();
-    if (pr.requested_reviewers) {
-      pr.requested_reviewers.forEach(reviewer => {
-        requestedReviewers.add(reviewer.login);
-      });
-    }
-
-    // Any commenter who hasn't been re-requested means there's still work to do
-    for (const commenter of commenters) {
-      if (!requestedReviewers.has(commenter)) {
-        return true;
-      }
-    }
-
-    return false; // Threads resolved and all commenters re-requested
-  }
-
-  /**
-   * Get prolific commenters who have been re-requested for review
-   * These are users with 2+ comments who are currently in requested_reviewers
-   */
-  getProlificCommentersReRequested(pr) {
-    const comments = this.getAllComments(pr);
-    const approvals = this.getApprovals(pr);
-    const approvedUsers = new Set(approvals.map(approval => approval.user.login));
-    const prOwner = pr.user.login;
-
-    // Get currently requested reviewers
-    const requestedReviewers = new Set();
-    if (pr.requested_reviewers) {
-      pr.requested_reviewers.forEach(reviewer => {
-        requestedReviewers.add(reviewer.login);
-      });
-    }
-
-    // Count comments by user
-    const commentCounts = new Map();
-    comments.forEach(comment => {
-      const user = comment.user.login;
-      commentCounts.set(user, (commentCounts.get(user) || 0) + 1);
-    });
-
-    // Find users with 2+ comments who are currently requested and haven't approved (excluding PR owner)
-    const prolificCommentersReRequested = [];
-    for (const [user, count] of commentCounts.entries()) {
-      if (count >= 2 && requestedReviewers.has(user) && !approvedUsers.has(user) && user !== prOwner) {
-        prolificCommentersReRequested.push(user);
-      }
-    }
-
-    return prolificCommentersReRequested;
-  }
-
-  /**
-   * Check if the PR has failing CI (failed combined status or check runs)
-   */
-  hasFailedStatusChecks(pr) {
-    return this.getFailedCheckNames(pr).length > 0;
   }
 
   /**
@@ -371,6 +386,13 @@ class PRMarkdownGenerator {
     const tb = new Date(b.started_at || b.completed_at || 0).getTime();
     if (ta !== tb) return ta > tb;
     return (a.id || 0) > (b.id || 0);
+  }
+
+  /**
+   * Check if the PR has failing CI (failed combined status or check runs)
+   */
+  hasFailedStatusChecks(pr) {
+    return this.getFailedCheckNames(pr).length > 0;
   }
 
   /**
@@ -416,23 +438,25 @@ class PRMarkdownGenerator {
   }
 
   /**
-   * Categorize PRs based on the new criteria
+   * Categorize PRs based on the review criteria.
    *
    * Priority order (a PR lands in the first bucket it matches):
    *   1. High priority (label-based escalation)
-   *   2. Have some comments to fix
+   *   2. Review pending comments (I have an unsubmitted draft review)
    *   3. Broken CI
-   *   4. Need one more approval (exactly 1 approval)
-   *   5. Needs approvals from prolific commenters (2+ comments, not approved)
-   *   6. Requires review (0 approvals)
-   *   7. Needs merging (2+ approvals, no blockers)
-   *   8. Uncategorized (safety net)
+   *   4. Have some comments to fix (open thread, reviewer not re-requested)
+   *   5. Need one more approval (exactly 1 approval)
+   *   6. Needs approvals from prolific commenters (2+ comments, not approved)
+   *   7. Requires review (0 approvals, nothing outstanding)
+   *   8. Needs merging (2+ approvals, no blockers)
+   *   9. Uncategorized (safety net)
    */
   categorizePRs(prs) {
     const categories = {
       highPriority: [],
-      hasCommentsToFix: [],
+      reviewPendingComments: [],
       brokenCI: [],
+      hasCommentsToFix: [],
       needOneMoreApproval: [],
       needsProlificCommentersApproval: [],
       requiresReview: [],
@@ -446,19 +470,24 @@ class PRMarkdownGenerator {
       const prolificCommentersWithoutApproval = this.getProlificCommentersWithoutApproval(pr);
       const hasCommentsToFixFlag = this.hasCommentsToFix(pr);
       const hasFailedCI = this.hasFailedStatusChecks(pr);
+      const hasPendingReview = this.hasPendingReviewByViewer(pr);
       const isHighPriority = this.hasHighPriorityLabel(pr);
 
       // High priority PRs get their own escalation bucket regardless of status
       if (isHighPriority) {
         categories.highPriority.push(pr);
       }
-      // Top priority: open comments and/or reviewers not yet re-requested
-      else if (hasCommentsToFixFlag) {
-        categories.hasCommentsToFix.push(pr);
+      // My own unsubmitted draft review — a personal reminder to finish it
+      else if (hasPendingReview) {
+        categories.reviewPendingComments.push(pr);
       }
       // Broken CI: one or more failed status checks / check runs
       else if (hasFailedCI) {
         categories.brokenCI.push(pr);
+      }
+      // Comments to fix: open thread whose reviewer has not been re-requested
+      else if (hasCommentsToFixFlag) {
+        categories.hasCommentsToFix.push(pr);
       }
       // Need one more approval (exactly 1) — takes priority over prolific commenters
       else if (approvalCount === 1) {
@@ -559,12 +588,12 @@ class PRMarkdownGenerator {
       markdown += `\n`;
     }
 
-    if (categories.hasCommentsToFix.length > 0) {
-      markdown += `## Have some comments to fix :wrench:\n`;
-      categories.hasCommentsToFix.forEach(pr => {
-        const comments = this.getAllComments(pr);
-        const commentCount = comments.length;
-        markdown += `- [${pr.title}](${pr.html_url}) (${commentCount} comment${commentCount !== 1 ? 's' : ''})\n`;
+    if (categories.reviewPendingComments.length > 0) {
+      markdown += `## Review pending comments (Reminder for me :zany_face:)\n`;
+      categories.reviewPendingComments.forEach(pr => {
+        const count = this.getMyPendingCommentCount(pr);
+        const detail = count > 0 ? ` (${count} pending comment${count !== 1 ? 's' : ''})` : '';
+        markdown += `- [${pr.title}](${pr.html_url})${detail}\n`;
       });
       markdown += `\n`;
     }
@@ -574,6 +603,18 @@ class PRMarkdownGenerator {
       categories.brokenCI.forEach(pr => {
         const failed = this.getFailedCheckNames(pr);
         const detail = failed.length > 0 ? ` (failed: ${failed.join(', ')})` : '';
+        markdown += `- [${pr.title}](${pr.html_url})${detail}\n`;
+      });
+      markdown += `\n`;
+    }
+
+    if (categories.hasCommentsToFix.length > 0) {
+      markdown += `## Have some comments to fix :wrench:\n`;
+      categories.hasCommentsToFix.forEach(pr => {
+        const openCount = this.getOpenThreads(pr).length;
+        const detail = openCount > 0
+          ? ` (${openCount} open thread${openCount !== 1 ? 's' : ''})`
+          : '';
         markdown += `- [${pr.title}](${pr.html_url})${detail}\n`;
       });
       markdown += `\n`;
@@ -592,21 +633,8 @@ class PRMarkdownGenerator {
     if (categories.needsProlificCommentersApproval.length > 0) {
       markdown += `## Needs approvals from previous :sparkles: prolific :sparkles: commenters\n`;
       categories.needsProlificCommentersApproval.forEach(pr => {
-        const prolificCommentersReRequested = this.getProlificCommentersReRequested(pr);
-        const prolificCommentersWithoutApproval = this.getProlificCommentersWithoutApproval(pr);
-
-        let commentersList = '';
-        let status = '';
-
-        if (prolificCommentersReRequested.length > 0) {
-          commentersList = prolificCommentersReRequested.join(', ');
-          status = 're-requested';
-        } else if (prolificCommentersWithoutApproval.length > 0) {
-          commentersList = prolificCommentersWithoutApproval.join(', ');
-          status = 'waiting for';
-        }
-
-        markdown += `- [${pr.title}](${pr.html_url}) (${status}: ${commentersList})\n`;
+        const commenters = this.getProlificCommentersWithoutApproval(pr).join(', ');
+        markdown += `- [${pr.title}](${pr.html_url}) (waiting for: ${commenters})\n`;
       });
       markdown += `\n`;
     }
@@ -741,12 +769,14 @@ Examples:
 
 Environment Variables:
   GITHUB_TOKEN  GitHub personal access token (recommended for higher rate limits;
-                required to detect resolved vs open review threads via GraphQL)
+                required to detect resolved vs open review threads and your own
+                pending draft reviews via GraphQL)
 
 Features:
   - Fetches all open pull requests from one or multiple repositories
   - Prioritizes PRs with "high priority", "urgent", or "critical" labels
   - Flags PRs with failing CI (commit status + check runs)
+  - Reminds you about your own unsubmitted draft reviews
   - Detects open vs resolved review threads (requires GITHUB_TOKEN)
   - Generates organized markdown with PR titles as clickable links
   - Combines PRs from multiple repositories into a single report
