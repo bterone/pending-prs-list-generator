@@ -54,6 +54,13 @@ node pr-generator.js owner/repo1 https://github.com/bterone/pending-prs-list-gen
 node pr-generator.js owner/repo1 owner/repo2 --output combined-prs.md
 ```
 
+#### Filter by Author
+
+```bash
+# Only include PRs opened by a specific GitHub user (case-insensitive)
+node pr-generator.js owner/repo1 owner/repo2 --user octocat
+```
+
 When using multiple repositories, all PRs are combined into unified categories regardless of which repository they came from. The PR links will correctly point to their respective repositories.
 
 ### With GitHub Token (Recommended)
@@ -168,10 +175,12 @@ The script automatically detects these labels as high priority:
 ## Command Line Options
 
 - `--output` or `-o` - Specify custom output filename
+- `--user` or `-u` - Only include PRs authored by this GitHub username
 - `--help` or `-h` - Display help information
 
 ## Output Files
 
 - Single repository: `owner-repo-prs.md`
 - Multiple repositories: `combined-prs-YYYY-MM-DD.md`
+- With `--user`: the username is added, e.g. `owner-repo-octocat-prs.md` or `combined-prs-octocat-YYYY-MM-DD.md`
 - Custom: Whatever you specify with `--output`
