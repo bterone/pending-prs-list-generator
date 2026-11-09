@@ -478,7 +478,13 @@ class PRMarkdownGenerator {
       uncategorized: []
     };
 
-    prs.forEach(pr => {
+    // Sort newest-first by creation date across all repos so every category
+    // lists PRs newest-first and interleaves repositories (no per-repo grouping)
+    const sortedPRs = [...prs].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at)
+    );
+
+    sortedPRs.forEach(pr => {
       const approvals = this.getApprovals(pr);
       const approvalCount = approvals.length;
       const prolificCommentersWithoutApproval = this.getProlificCommentersWithoutApproval(pr);
@@ -540,22 +546,6 @@ class PRMarkdownGenerator {
       label.name.toLowerCase().includes('urgent') ||
       label.name.toLowerCase().includes('critical')
     );
-  }
-
-  /**
-   * Sort PRs with high priority first
-   */
-  sortPRsByPriority(prs) {
-    return prs.sort((a, b) => {
-      const aHighPriority = this.hasHighPriorityLabel(a);
-      const bHighPriority = this.hasHighPriorityLabel(b);
-
-      if (aHighPriority && !bHighPriority) return -1;
-      if (!aHighPriority && bHighPriority) return 1;
-
-      // If both have same priority, sort by creation date (newest first)
-      return new Date(b.created_at) - new Date(a.created_at);
-    });
   }
 
   /**
