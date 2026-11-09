@@ -4,11 +4,22 @@ const axios = require('axios');
 const fs = require('fs');
 
 class PRMarkdownGenerator {
-  constructor() {
+  constructor({ authorFilter = null } = {}) {
     this.githubToken = process.env.GITHUB_TOKEN;
     this.baseURL = 'https://api.github.com';
     // Login of the authenticated token owner ("me"); resolved lazily.
     this.viewerLogin = null;
+    // Optional PR author login to restrict results to (leading "@" allowed).
+    this.authorFilter = authorFilter ? authorFilter.replace(/^@/, '') : null;
+  }
+
+  /**
+   * True when the PR passes the author filter (or no filter is set).
+   * GitHub logins are case-insensitive, so compare case-insensitively.
+   */
+  matchesAuthorFilter(pr) {
+    if (!this.authorFilter) return true;
+    return (pr.user?.login || '').toLowerCase() === this.authorFilter.toLowerCase();
   }
 
   /**
@@ -78,8 +89,11 @@ class PRMarkdownGenerator {
         );
 
         const prs = response.data;
-        // Filter out draft PRs - only include PRs ready for review
-        const readyForReviewPRs = prs.filter(pr => !pr.draft);
+        // Filter out draft PRs - only include PRs ready for review - and apply
+        // the optional author filter before fetching per-PR details
+        const readyForReviewPRs = prs.filter(pr =>
+          !pr.draft && this.matchesAuthorFilter(pr)
+        );
         allPRs = allPRs.concat(readyForReviewPRs);
 
         hasMore = prs.length === 100;
@@ -563,13 +577,15 @@ class PRMarkdownGenerator {
       markdown += `# Pull Requests Summary\n\n`;
       markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
       markdown += `Repositories: ${repoDataArray.length}\n`;
-      markdown += `Total PRs: ${allPRs.length}\n\n`;
     } else {
       const { owner, repo } = repoDataArray[0];
       markdown += `# Pull Requests for ${owner}/${repo}\n\n`;
       markdown += `Generated on: ${new Date().toISOString().split('T')[0]}\n`;
-      markdown += `Total PRs: ${allPRs.length}\n\n`;
     }
+    if (this.authorFilter) {
+      markdown += `Author: ${this.authorFilter}\n`;
+    }
+    markdown += `Total PRs: ${allPRs.length}\n\n`;
 
     // Categorize all PRs together
     const categories = this.categorizePRs(allPRs);
@@ -680,7 +696,11 @@ class PRMarkdownGenerator {
       // Handle both single string and array of strings
       const repositories = Array.isArray(repoInputs) ? repoInputs : [repoInputs];
 
-      console.log(`🔍 Processing ${repositories.length} repository/repositories...\n`);
+      console.log(`🔍 Processing ${repositories.length} repository/repositories...`);
+      if (this.authorFilter) {
+        console.log(`👤 Only including PRs authored by ${this.authorFilter}`);
+      }
+      console.log('');
 
       const allRepoData = [];
       let totalPRs = 0;
@@ -714,15 +734,20 @@ class PRMarkdownGenerator {
       console.log(`📝 Generating markdown for ${totalPRs} total PRs...`);
       const markdown = this.generateMarkdown(allRepoData);
 
-      // Generate filename
+      // Generate filename. With an author filter, the username goes into the
+      // default name so filtered reports don't overwrite the unfiltered ones.
+      // Keep only filename-safe characters (GitHub logins are alphanumeric + "-").
+      const userPart = this.authorFilter
+        ? `-${this.authorFilter.replace(/[^A-Za-z0-9-]/g, '-')}`
+        : '';
       let fileName;
       if (outputFile) {
         fileName = outputFile;
       } else if (allRepoData.length === 1) {
         const { owner, repo } = allRepoData[0];
-        fileName = `${owner}-${repo}-prs.md`;
+        fileName = `${owner}-${repo}${userPart}-prs.md`;
       } else {
-        fileName = `combined-prs-${new Date().toISOString().split('T')[0]}.md`;
+        fileName = `combined-prs${userPart}-${new Date().toISOString().split('T')[0]}.md`;
       }
 
       console.log(`💾 Writing to ${fileName}...`);
@@ -749,12 +774,16 @@ async function main() {
     console.log(`
 PR Markdown Generator
 
-Usage: node pr-generator.js <repository1> [repository2] [...] [--output <filename>]
+Usage: node pr-generator.js <repository1> [repository2] [...] [--user <login>] [--output <filename>]
 
 Arguments:
   repository    One or more GitHub repositories (owner/repo or GitHub URL)
-  --output      Optional output filename (default: owner-repo-prs.md for single repo,
-                combined-prs-YYYY-MM-DD.md for multiple repos)
+  --user, -u    Only include PRs authored by this GitHub username
+                (case-insensitive; a leading "@" is ignored)
+  --output, -o  Optional output filename (default: owner-repo-prs.md for single repo,
+                combined-prs-YYYY-MM-DD.md for multiple repos; with --user, the
+                username is added: owner-repo-<user>-prs.md /
+                combined-prs-<user>-YYYY-MM-DD.md)
 
 Examples:
   Single repository:
@@ -766,6 +795,9 @@ Examples:
     node pr-generator.js facebook/react microsoft/vscode
     node pr-generator.js owner/repo1 owner/repo2 owner/repo3
     node pr-generator.js repo1 repo2 --output combined.md
+
+  Filter by author:
+    node pr-generator.js owner/repo1 owner/repo2 --user octocat
 
 Environment Variables:
   GITHUB_TOKEN  GitHub personal access token (recommended for higher rate limits;
@@ -788,6 +820,7 @@ Features:
   // Parse arguments
   let repositories = [];
   let outputFile = null;
+  let authorFilter = null;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') {
@@ -795,6 +828,14 @@ Features:
         outputFile = args[i + 1];
         i++; // Skip next argument
       }
+    } else if (args[i] === '--user' || args[i] === '-u') {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-') || !value.replace(/^@/, '')) {
+        console.error(`❌ Error: ${args[i]} requires a GitHub username`);
+        process.exit(1);
+      }
+      authorFilter = value;
+      i++; // Skip next argument
     } else {
       repositories.push(args[i]);
     }
@@ -805,7 +846,7 @@ Features:
     process.exit(1);
   }
 
-  const generator = new PRMarkdownGenerator();
+  const generator = new PRMarkdownGenerator({ authorFilter });
   await generator.generatePRMarkdown(repositories, outputFile);
 }
 
