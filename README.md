@@ -182,5 +182,5 @@ The script automatically detects these labels as high priority:
 
 - Single repository: `owner-repo-prs.md`
 - Multiple repositories: `combined-prs-YYYY-MM-DD.md`
-- With `--user`: the username is added, e.g. `owner-repo-octocat-prs.md` or `combined-prs-octocat-YYYY-MM-DD.md`
+- With `--user`: the username is added, e.g. `owner-repo-octocat-prs.md` or `combined-prs-YYYY-MM-DD-octocat.md`
 - Custom: Whatever you specify with `--output`
