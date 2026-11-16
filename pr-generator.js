@@ -737,7 +737,7 @@ class PRMarkdownGenerator {
         const { owner, repo } = allRepoData[0];
         fileName = `${owner}-${repo}${userPart}-prs.md`;
       } else {
-        fileName = `combined-prs${userPart}-${new Date().toISOString().split('T')[0]}.md`;
+        fileName = `combined-prs-${new Date().toISOString().split('T')[0]}${userPart}.md`;
       }
 
       console.log(`💾 Writing to ${fileName}...`);
@@ -773,7 +773,7 @@ Arguments:
   --output, -o  Optional output filename (default: owner-repo-prs.md for single repo,
                 combined-prs-YYYY-MM-DD.md for multiple repos; with --user, the
                 username is added: owner-repo-<user>-prs.md /
-                combined-prs-<user>-YYYY-MM-DD.md)
+                combined-prs-YYYY-MM-DD-<user>.md)
 
 Examples:
   Single repository:
