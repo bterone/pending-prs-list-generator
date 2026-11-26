@@ -4,22 +4,39 @@ const axios = require('axios');
 const fs = require('fs');
 
 class PRMarkdownGenerator {
-  constructor({ authorFilter = null } = {}) {
+  constructor({ authorFilter = null, excludedAuthors = [] } = {}) {
     this.githubToken = process.env.GITHUB_TOKEN;
     this.baseURL = 'https://api.github.com';
     // Login of the authenticated token owner ("me"); resolved lazily.
     this.viewerLogin = null;
     // Optional PR author login to restrict results to (leading "@" allowed).
     this.authorFilter = authorFilter ? authorFilter.replace(/^@/, '') : null;
+    // PR author logins to leave out (e.g. "dependabot[bot]"). Leading "@" is
+    // stripped, blanks dropped, and duplicates removed case-insensitively
+    // while keeping the first spelling for display.
+    const seen = new Set();
+    this.excludedAuthors = [];
+    for (const raw of excludedAuthors) {
+      const login = String(raw).trim().replace(/^@/, '');
+      const key = login.toLowerCase();
+      if (login && !seen.has(key)) {
+        seen.add(key);
+        this.excludedAuthors.push(login);
+      }
+    }
+    this.excludedAuthorKeys = seen;
   }
 
   /**
-   * True when the PR passes the author filter (or no filter is set).
+   * True when the PR passes the author filters: it matches --user (if set)
+   * and its author is not in the --exclude list.
    * GitHub logins are case-insensitive, so compare case-insensitively.
    */
   matchesAuthorFilter(pr) {
+    const login = (pr.user?.login || '').toLowerCase();
+    if (this.excludedAuthorKeys.has(login)) return false;
     if (!this.authorFilter) return true;
-    return (pr.user?.login || '').toLowerCase() === this.authorFilter.toLowerCase();
+    return login === this.authorFilter.toLowerCase();
   }
 
   /**
@@ -90,7 +107,8 @@ class PRMarkdownGenerator {
 
         const prs = response.data;
         // Filter out draft PRs - only include PRs ready for review - and apply
-        // the optional author filter before fetching per-PR details
+        // the optional author include/exclude filters before fetching per-PR
+        // details
         const readyForReviewPRs = prs.filter(pr =>
           !pr.draft && this.matchesAuthorFilter(pr)
         );
@@ -575,6 +593,9 @@ class PRMarkdownGenerator {
     if (this.authorFilter) {
       markdown += `Author: ${this.authorFilter}\n`;
     }
+    if (this.excludedAuthors.length > 0) {
+      markdown += `Excluded authors: ${this.excludedAuthors.join(', ')}\n`;
+    }
     markdown += `Total PRs: ${allPRs.length}\n\n`;
 
     // Categorize all PRs together
@@ -690,6 +711,9 @@ class PRMarkdownGenerator {
       if (this.authorFilter) {
         console.log(`👤 Only including PRs authored by ${this.authorFilter}`);
       }
+      if (this.excludedAuthors.length > 0) {
+        console.log(`🚫 Excluding PRs authored by ${this.excludedAuthors.join(', ')}`);
+      }
       console.log('');
 
       const allRepoData = [];
@@ -764,12 +788,17 @@ async function main() {
     console.log(`
 PR Markdown Generator
 
-Usage: node pr-generator.js <repository1> [repository2] [...] [--user <login>] [--output <filename>]
+Usage: node pr-generator.js <repository1> [repository2] [...] [--user <login>]
+                             [--exclude <login>[,<login>...]] [--output <filename>]
 
 Arguments:
   repository    One or more GitHub repositories (owner/repo or GitHub URL)
   --user, -u    Only include PRs authored by this GitHub username
                 (case-insensitive; a leading "@" is ignored)
+  --exclude, -x Leave out PRs authored by these GitHub usernames. Repeat the
+                flag or pass a comma-separated list (case-insensitive; a
+                leading "@" is ignored). Bots need their full login, e.g.
+                'dependabot[bot]' (quote it so the shell doesn't glob it)
   --output, -o  Optional output filename (default: owner-repo-prs.md for single repo,
                 combined-prs-YYYY-MM-DD.md for multiple repos; with --user, the
                 username is added: owner-repo-<user>-prs.md /
@@ -788,6 +817,10 @@ Examples:
 
   Filter by author:
     node pr-generator.js owner/repo1 owner/repo2 --user octocat
+
+  Exclude authors:
+    node pr-generator.js owner/repo1 --exclude 'dependabot[bot]'
+    node pr-generator.js owner/repo1 -x 'dependabot[bot],renovate[bot]' -x octocat
 
 Environment Variables:
   GITHUB_TOKEN  GitHub personal access token (recommended for higher rate limits;
@@ -811,6 +844,7 @@ Features:
   let repositories = [];
   let outputFile = null;
   let authorFilter = null;
+  const excludedAuthors = [];
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' || args[i] === '-o') {
@@ -826,6 +860,18 @@ Features:
       }
       authorFilter = value;
       i++; // Skip next argument
+    } else if (args[i] === '--exclude' || args[i] === '-x') {
+      const value = args[i + 1];
+      const logins = (value || '')
+        .split(',')
+        .map(login => login.trim().replace(/^@/, ''))
+        .filter(Boolean);
+      if (!value || value.startsWith('-') || logins.length === 0) {
+        console.error(`❌ Error: ${args[i]} requires one or more GitHub usernames`);
+        process.exit(1);
+      }
+      excludedAuthors.push(...logins);
+      i++; // Skip next argument
     } else {
       repositories.push(args[i]);
     }
@@ -836,7 +882,7 @@ Features:
     process.exit(1);
   }
 
-  const generator = new PRMarkdownGenerator({ authorFilter });
+  const generator = new PRMarkdownGenerator({ authorFilter, excludedAuthors });
   await generator.generatePRMarkdown(repositories, outputFile);
 }
 

@@ -61,6 +61,18 @@ node pr-generator.js owner/repo1 owner/repo2 --output combined-prs.md
 node pr-generator.js owner/repo1 owner/repo2 --user octocat
 ```
 
+#### Exclude Authors
+
+```bash
+# Leave out PRs opened by bots or specific users (case-insensitive)
+node pr-generator.js owner/repo1 owner/repo2 --exclude 'dependabot[bot]'
+
+# Repeat the flag or pass a comma-separated list
+node pr-generator.js owner/repo1 -x 'dependabot[bot],renovate[bot]' -x octocat
+```
+
+Bot accounts must be given by their full login including the `[bot]` suffix. Quote the value, since shells like zsh treat `[...]` as a glob pattern and fail with `no matches found`. `--exclude` can be combined with `--user`, and it doesn't change the default output filename.
+
 When using multiple repositories, all PRs are combined into unified categories regardless of which repository they came from. The PR links will correctly point to their respective repositories.
 
 ### With GitHub Token (Recommended)
@@ -176,6 +188,7 @@ The script automatically detects these labels as high priority:
 
 - `--output` or `-o` - Specify custom output filename
 - `--user` or `-u` - Only include PRs authored by this GitHub username
+- `--exclude` or `-x` - Leave out PRs authored by these GitHub usernames (repeatable, or comma-separated)
 - `--help` or `-h` - Display help information
 
 ## Output Files
